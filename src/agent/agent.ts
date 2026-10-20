@@ -1,5 +1,6 @@
 import { Ollama } from 'ollama';
 import type { ChatResponse, Message, Tool } from 'ollama';
+import type { StreamCallback } from '../channels/base.js';
 import type { Scheduler } from '../services/scheduler.js';
 import { createTools } from './tools/index.js';
 import type { ToolContext, ToolHandler } from './tools/types.js';
@@ -36,13 +37,16 @@ export class Agent {
     this.handlers = handlers;
   }
 
-  /** Proses satu pesan dari pengguna dan kembalikan jawaban agent. */
-  async handleMessage(chatId: string, text: string): Promise<string> {
+  /**
+   * Proses satu pesan dari pengguna dan kembalikan jawaban agent.
+   * Bila onStream diisi, jawaban akhir dikirim bertahap (teks terakumulasi) lewat callback itu.
+   */
+  async handleMessage(chatId: string, text: string, onStream?: StreamCallback): Promise<string> {
     const history = this.getHistory(chatId);
     history.push({ role: 'user', content: text });
 
     try {
-      const reply = await this.runLoop(history, chatId);
+      const reply = await this.runLoop(history, chatId, onStream);
       this.trimHistory(chatId);
       return reply;
     } catch (error) {
@@ -55,6 +59,28 @@ export class Agent {
   /** Prompt satu kali tanpa riwayat tersimpan — dipakai tugas terjadwal seperti digest berita. */
   async askOnce(prompt: string): Promise<string> {
     return this.runLoop([{ role: 'user', content: prompt }], 'system:scheduler');
+  }
+
+  /** Daftar chatId yang pernah berinteraksi sejak proses menyala (dipakai heartbeat). */
+  getActiveChatIds(): string[] {
+    return [...this.histories.keys()];
+  }
+
+  /**
+   * Jalankan satu detak heartbeat pada konteks chat tertentu (non-streaming).
+   * Pertukaran heartbeat TIDAK disimpan ke riwayat agar tidak mengotori percakapan.
+   */
+  async runHeartbeat(chatId: string, prompt: string): Promise<string> {
+    const history = this.getHistory(chatId);
+    const keep = history.length;
+    history.push({ role: 'user', content: prompt });
+    try {
+      return await this.runLoop(history, chatId);
+    } catch (error) {
+      throw toFriendlyError(error);
+    } finally {
+      history.length = keep;
+    }
   }
 
   private getHistory(chatId: string): Message[] {
@@ -74,15 +100,16 @@ export class Agent {
   }
 
   /** Loop tool calling: panggil model → eksekusi tool bila diminta → ulangi sampai ada jawaban akhir. */
-  private async runLoop(history: Message[], chatId: string): Promise<string> {
+  private async runLoop(history: Message[], chatId: string, onStream?: StreamCallback): Promise<string> {
     const context: ToolContext = { chatId };
 
     for (let iteration = 0; iteration < this.options.maxToolIterations; iteration++) {
-      const response = await this.chatWithRetry([
-        { role: 'system', content: this.options.systemPrompt },
-        ...history,
-      ]);
-      const message = response.message;
+      const messages: Message[] = [{ role: 'system', content: this.options.systemPrompt }, ...history];
+      // Mode streaming: token jawaban diteruskan ke pemanggil begitu diterima dari model.
+      // Tool calls tetap dikumpulkan sampai stream selesai lalu dieksekusi seperti biasa.
+      const message = onStream
+        ? await this.chatStreamWithRetry(messages, onStream)
+        : (await this.chatWithRetry(messages)).message;
       history.push(message);
 
       const toolCalls = message.tool_calls ?? [];
@@ -123,6 +150,52 @@ export class Agent {
       console.warn('[agent] respons model terputus — mencoba ulang sekali dalam 3 detik...');
       await new Promise((resolve) => setTimeout(resolve, 3000));
       return this.client.chat(request);
+    }
+  }
+
+  /**
+   * Versi streaming dari chatWithRetry: token jawaban diteruskan ke onToken begitu diterima.
+   * Retry hanya dilakukan bila belum ada token yang terkirim (agar teks tidak terkirim ganda).
+   */
+  private async chatStreamWithRetry(messages: Message[], onToken: StreamCallback): Promise<Message> {
+    let emitted = false;
+
+    const streamOnce = async (): Promise<Message> => {
+      const stream = await this.client.chat({
+        model: this.options.model,
+        messages,
+        tools: this.tools,
+        stream: true,
+        ...(this.options.numCtx ? { options: { num_ctx: this.options.numCtx } } : {}),
+      });
+
+      let content = '';
+      const toolCalls: NonNullable<Message['tool_calls']> = [];
+      for await (const chunk of stream) {
+        if (chunk.message.content) {
+          content += chunk.message.content;
+          emitted = true;
+          onToken(content);
+        }
+        // Tool calls tiba utuh (biasanya di chunk akhir), bukan per-token.
+        if (chunk.message.tool_calls?.length) toolCalls.push(...chunk.message.tool_calls);
+      }
+
+      const message: Message = { role: 'assistant', content };
+      if (toolCalls.length > 0) message.tool_calls = toolCalls;
+      return message;
+    };
+
+    try {
+      return await streamOnce();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (emitted || !/unexpected EOF|runner.{0,20}(stop|die|crash|exit)|connection reset/i.test(message)) {
+        throw error;
+      }
+      console.warn('[agent] stream model terputus — mencoba ulang sekali dalam 3 detik...');
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      return streamOnce();
     }
   }
 

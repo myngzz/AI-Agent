@@ -1,8 +1,9 @@
 import { config } from './config.js';
 import { Agent } from './agent/agent.js';
-import type { Channel } from './channels/base.js';
+import type { Channel, MessageHandler } from './channels/base.js';
 import { TelegramChannel } from './channels/telegram.js';
 import { WhatsAppChannel } from './channels/whatsapp.js';
+import { Heartbeat } from './services/heartbeat.js';
 import { OutboundDispatcher } from './services/outbound.js';
 import { DIGEST_PROMPT, Scheduler } from './services/scheduler.js';
 
@@ -32,7 +33,16 @@ async function main(): Promise<void> {
 
   scheduler.setDigestGenerator(() => agent.askOnce(DIGEST_PROMPT));
 
-  const handler = (chatId: string, text: string): Promise<string> => agent.handleMessage(chatId, text);
+  // Heartbeat proaktif (ala OpenClaw): agent bangun berkala dan bisa mengirim pesan duluan.
+  const heartbeat =
+    config.heartbeatIntervalMinutes > 0
+      ? new Heartbeat(outbound, agent, {
+          intervalMs: config.heartbeatIntervalMinutes * 60_000,
+          chatIds: config.heartbeatChatIds,
+        })
+      : undefined;
+
+  const handler: MessageHandler = (chatId, text, onStream) => agent.handleMessage(chatId, text, onStream);
 
   const channels: Channel[] = [];
 
@@ -40,7 +50,10 @@ async function main(): Promise<void> {
     if (!config.telegramToken) {
       console.warn('[telegram] ENABLE_TELEGRAM=true tetapi TELEGRAM_BOT_TOKEN kosong — channel dilewati.');
     } else {
-      const telegram = new TelegramChannel(config.telegramToken, handler, { groupPrefix: config.groupPrefix });
+      const telegram = new TelegramChannel(config.telegramToken, handler, {
+        groupPrefix: config.groupPrefix,
+        streamIntervalMs: config.streamEditIntervalMs,
+      });
       outbound.register(telegram.prefix, telegram);
       channels.push(telegram);
     }
@@ -49,6 +62,7 @@ async function main(): Promise<void> {
     const whatsapp = new WhatsAppChannel(handler, {
       allowGroups: config.allowGroups,
       groupPrefix: config.groupPrefix,
+      streamIntervalMs: config.streamEditIntervalMs,
     });
     outbound.register(whatsapp.prefix, whatsapp);
     channels.push(whatsapp);
@@ -61,13 +75,22 @@ async function main(): Promise<void> {
 
   console.log(`Channel aktif : ${channels.map((c) => c.name).join(', ')}`);
   console.log(`Grup         : ${config.allowGroups ? `aktif (prefix "${config.groupPrefix}" / mention)` : 'nonaktif'}`);
-  console.log(`Berita harian: ${config.newsDigestTime} (${config.timezone})\n`);
+  console.log(`Berita harian: ${config.newsDigestTime} (${config.timezone})`);
+  console.log(
+    `Heartbeat    : ${
+      heartbeat
+        ? `tiap ${config.heartbeatIntervalMinutes} menit → ${config.heartbeatChatIds.length > 0 ? config.heartbeatChatIds.join(', ') : 'semua chat aktif'}`
+        : 'nonaktif'
+    }\n`,
+  );
 
   scheduler.start();
+  heartbeat?.start();
 
   // Matikan dengan bersih saat Ctrl+C / kill.
   const shutdown = async (): Promise<void> => {
     console.log('\nMematikan agent...');
+    heartbeat?.stop();
     scheduler.stop();
     await Promise.allSettled(channels.map((c) => c.stop()));
     process.exit(0);

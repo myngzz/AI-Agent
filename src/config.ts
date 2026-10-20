@@ -45,6 +45,15 @@ export const config = {
   newsDigestTime: process.env.NEWS_DIGEST_TIME ?? '07:00',
   /** File penyimpanan data pengingat & langganan berita. */
   dataFile: process.env.DATA_FILE ?? 'data/scheduler.json',
+  /** Interval heartbeat proaktif (menit) — agent bangun berkala dan bisa menyapa duluan. 0 = nonaktif. */
+  heartbeatIntervalMinutes: Number(process.env.HEARTBEAT_INTERVAL_MINUTES ?? '30') || 0,
+  /** Target heartbeat (chatId dipisah koma, mis. "tg:123,wa:628xxx@c.us"). Kosong = semua chat aktif. */
+  heartbeatChatIds: (process.env.HEARTBEAT_CHAT_IDS ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean),
+  /** Jeda minimal antar pembaruan pesan saat streaming di Telegram/WhatsApp (ms). */
+  streamEditIntervalMs: Number(process.env.STREAM_EDIT_INTERVAL_MS) || 1500,
   /** Jumlah pesan terakhir yang disimpan sebagai konteks percakapan per chat. */
   maxHistory: 20,
   /** Batas iterasi tool calling agar agent tidak berputar tanpa henti. */

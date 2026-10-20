@@ -17,6 +17,8 @@ AI agent pribadi berbasis **Node.js + TypeScript** yang bisa mengerjakan tugas-t
   | `set_reminder` | Menyetel pengingat terjadwal |
   | `list_reminders` / `cancel_reminder` | Lihat & batalkan pengingat |
   | `subscribe_news` / `unsubscribe_news` | Langganan ringkasan berita harian |
+- ⚡ **Streaming jawaban** — balasan tampil bertahap: token langsung di terminal, edit pesan berkala di Telegram/WhatsApp
+- 💓 **Heartbeat proaktif (ala OpenClaw)** — agent "bangun" berkala dan menyapa duluan hanya bila ada hal penting
 - ⏰ **Pengingat terjadwal** — "ingatkan saya 30 menit lagi..." (tersimpan di disk, tahan restart)
 - 📰 **Ringkasan berita harian otomatis** — agent mencari & meringkas berita lalu mengirimnya tiap pagi
 - 👥 **Dukungan grup** WhatsApp & Telegram (merespons bila di-mention atau diawali prefix `!ai`)
@@ -41,7 +43,8 @@ src/
 │       └── datetime.ts   # Tanggal & waktu
 ├── services/
 │   ├── outbound.ts       # Dispatcher pesan keluar (proaktif) ke channel
-│   └── scheduler.ts      # Penjadwal: pengingat + digest berita (persisten di data/)
+│   ├── scheduler.ts      # Penjadwal: pengingat + digest berita (persisten di data/)
+│   └── heartbeat.ts      # Heartbeat proaktif: agent bangun berkala (HEARTBEAT_OK = diam)
 └── channels/
     ├── base.ts           # Interface umum channel
     ├── telegram.ts       # Bot Telegram (grammY)
@@ -86,6 +89,9 @@ Edit `.env`:
 - **`ENABLE_GROUPS`** — set `true` agar agent merespons di grup (via mention atau prefix).
 - **`GROUP_PREFIX`** — prefix pemicu di grup (default `!ai`).
 - **`NEWS_DIGEST_TIME`** — jam pengiriman ringkasan berita harian (default `07:00`).
+- **`HEARTBEAT_INTERVAL_MINUTES`** — interval heartbeat proaktif dalam menit (default `30`, `0` = nonaktif).
+- **`HEARTBEAT_CHAT_IDS`** — (opsional) target heartbeat dipisah koma, mis. `tg:123456,wa:628xxx@c.us`; kosong = semua chat yang pernah aktif.
+- **`STREAM_EDIT_INTERVAL_MS`** — (opsional) jeda minimal antar edit pesan saat streaming (default `1500`).
 
 ## Menjalankan
 
@@ -127,7 +133,14 @@ Kelola lewat chat: "pengingat apa saja yang aktif?" lalu "batalkan pengingat <id
 
 Kirim **"langganan berita"** ke agent → chat Anda terdaftar. Setiap hari pukul `NEWS_DIGEST_TIME`, agent mencari berita terkini di internet, meringkas 5 berita utama, lalu mengirimkannya otomatis. Berhenti dengan **"berhenti berlangganan berita"**.
 
-### 👥 Dukungan grup
+### � Heartbeat proaktif
+
+Terinspirasi OpenClaw: tiap `HEARTBEAT_INTERVAL_MINUTES` menit agent "bangun" dengan konteks percakapan terakhir, boleh memakai tools, lalu menimbang apakah ada hal yang layak disampaikan. Bila tidak ada, agent membalas `HEARTBEAT_OK` dan **tidak ada pesan yang dikirim**. Pertukaran heartbeat tidak disimpan ke riwayat percakapan.
+
+- Target: `HEARTBEAT_CHAT_IDS` (dipisah koma); kosong = semua chat yang pernah aktif sejak agent menyala.
+- Set `HEARTBEAT_INTERVAL_MINUTES=0` untuk mematikan.
+
+### �👥 Dukungan grup
 
 Set `ENABLE_GROUPS=true` di `.env`. Di grup, agent hanya merespons bila:
 

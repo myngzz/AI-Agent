@@ -1,5 +1,5 @@
 import { Bot } from 'grammy';
-import { splitMessage } from './base.js';
+import { createThrottledRenderer, splitMessage } from './base.js';
 import type { Channel, MessageHandler } from './base.js';
 
 /** Batas karakter per pesan Telegram. */
@@ -11,10 +11,17 @@ export class TelegramChannel implements Channel {
   readonly prefix = 'tg';
   private readonly bot: Bot;
   private readonly groupPrefix: string;
+  /** Jeda minimal antar edit pesan saat streaming (ms). */
+  private readonly streamIntervalMs: number;
 
-  constructor(token: string, handler: MessageHandler, options: { groupPrefix?: string } = {}) {
+  constructor(
+    token: string,
+    handler: MessageHandler,
+    options: { groupPrefix?: string; streamIntervalMs?: number } = {},
+  ) {
     this.bot = new Bot(token);
     this.groupPrefix = options.groupPrefix ?? '!ai';
+    this.streamIntervalMs = options.streamIntervalMs ?? 1500;
 
     this.bot.on('message:text', async (ctx) => {
       let text = ctx.message.text.trim();
@@ -38,15 +45,43 @@ export class TelegramChannel implements Channel {
       const chatId = `tg:${ctx.chat.id}`;
       console.log(`[telegram] pesan dari @${ctx.from?.username ?? ctx.chat.id}: ${text}`);
 
+      // Streaming: kirim placeholder lalu edit berkala dengan jawaban yang terakumulasi.
+      let placeholder: { message_id: number } | undefined;
       try {
         await ctx.replyWithChatAction('typing');
-        const reply = await handler(chatId, text);
-        for (const part of splitMessage(reply, TELEGRAM_LIMIT)) {
+        placeholder = await ctx.reply('✍️');
+
+        let rendered = '';
+        const renderer = createThrottledRenderer(this.streamIntervalMs, async (partial) => {
+          const preview =
+            partial.length > TELEGRAM_LIMIT ? `${partial.slice(0, TELEGRAM_LIMIT - 1)}…` : partial;
+          await this.bot.api.editMessageText(ctx.chat.id, placeholder!.message_id, preview);
+          rendered = preview;
+        });
+
+        const reply = await handler(chatId, text, (accumulated) => renderer.push(accumulated));
+        await renderer.flush();
+
+        // Pastikan pesan akhir utuh; kirim sisanya sebagai pesan lanjutan bila melebihi batas.
+        const parts = splitMessage(reply, TELEGRAM_LIMIT);
+        if (rendered !== parts[0]) {
+          await this.bot.api.editMessageText(ctx.chat.id, placeholder.message_id, parts[0]);
+        }
+        for (const part of parts.slice(1)) {
           await ctx.reply(part);
         }
       } catch (error) {
         console.error('[telegram] error:', error);
-        await ctx.reply(`Maaf, terjadi kesalahan: ${error instanceof Error ? error.message : String(error)}`);
+        const message = `Maaf, terjadi kesalahan: ${error instanceof Error ? error.message : String(error)}`;
+        try {
+          if (placeholder) {
+            await this.bot.api.editMessageText(ctx.chat.id, placeholder.message_id, message);
+          } else {
+            await ctx.reply(message);
+          }
+        } catch {
+          await ctx.reply(message);
+        }
       }
     });
 

@@ -1,6 +1,6 @@
 import WAWebJS from 'whatsapp-web.js';
 import qrcodeTerminal from 'qrcode-terminal';
-import { splitMessage } from './base.js';
+import { createThrottledRenderer, splitMessage } from './base.js';
 import type { Channel, MessageHandler } from './base.js';
 
 /** Batas aman karakter per pesan WhatsApp. */
@@ -11,6 +11,8 @@ export interface WhatsAppOptions {
   allowGroups?: boolean;
   /** Prefix pemicu di grup. Default "!ai". */
   groupPrefix?: string;
+  /** Jeda minimal antar edit pesan saat streaming (ms). Default 2000. */
+  streamIntervalMs?: number;
 }
 
 /**
@@ -28,6 +30,7 @@ export class WhatsAppChannel implements Channel {
     this.options = {
       allowGroups: options.allowGroups ?? false,
       groupPrefix: options.groupPrefix ?? '!ai',
+      streamIntervalMs: options.streamIntervalMs ?? 2000,
     };
     this.client = new WAWebJS.Client({
       authStrategy: new WAWebJS.LocalAuth({ dataPath: '.wwebjs_auth' }),
@@ -81,17 +84,41 @@ export class WhatsAppChannel implements Channel {
       const chatId = `wa:${msg.from}`;
       console.log(`[whatsapp] pesan dari ${msg.from}: ${text}`);
 
+      // Streaming: kirim placeholder lalu edit berkala dengan jawaban yang terakumulasi.
+      let placeholder: WAWebJS.Message | undefined;
       try {
         const chat = await msg.getChat();
         await chat.sendStateTyping();
 
-        const reply = await handler(chatId, text);
-        for (const part of splitMessage(reply, WA_LIMIT)) {
+        placeholder = await msg.reply('✍️');
+        let rendered = '';
+        const renderer = createThrottledRenderer(this.options.streamIntervalMs, async (partial) => {
+          const preview = partial.length > WA_LIMIT ? `${partial.slice(0, WA_LIMIT - 1)}…` : partial;
+          await placeholder!.edit(preview);
+          rendered = preview;
+        });
+
+        const reply = await handler(chatId, text, (accumulated) => renderer.push(accumulated));
+        await renderer.flush();
+
+        // Pastikan pesan akhir utuh; kirim sisanya sebagai pesan lanjutan bila melebihi batas.
+        const parts = splitMessage(reply, WA_LIMIT);
+        if (rendered !== parts[0]) await placeholder.edit(parts[0]);
+        for (const part of parts.slice(1)) {
           await msg.reply(part);
         }
       } catch (error) {
         console.error('[whatsapp] error:', error);
-        await msg.reply(`Maaf, terjadi kesalahan: ${error instanceof Error ? error.message : String(error)}`);
+        const message = `Maaf, terjadi kesalahan: ${error instanceof Error ? error.message : String(error)}`;
+        try {
+          if (placeholder) {
+            await placeholder.edit(message);
+          } else {
+            await msg.reply(message);
+          }
+        } catch {
+          await msg.reply(message);
+        }
       }
     });
   }

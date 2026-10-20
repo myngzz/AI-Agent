@@ -1,6 +1,7 @@
 import * as readline from 'node:readline/promises';
 import { Agent } from './agent/agent.js';
 import { config } from './config.js';
+import { Heartbeat } from './services/heartbeat.js';
 import { OutboundDispatcher } from './services/outbound.js';
 import { DIGEST_PROMPT, Scheduler } from './services/scheduler.js';
 
@@ -41,6 +42,16 @@ async function main(): Promise<void> {
   scheduler.setDigestGenerator(() => agent.askOnce(DIGEST_PROMPT));
   scheduler.start();
 
+  // Heartbeat proaktif: pesan menyala dicetak ke terminal lewat stub outbound di atas.
+  const heartbeat =
+    config.heartbeatIntervalMinutes > 0
+      ? new Heartbeat(outbound, agent, {
+          intervalMs: config.heartbeatIntervalMinutes * 60_000,
+          chatIds: config.heartbeatChatIds,
+        })
+      : undefined;
+  heartbeat?.start();
+
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   // Mendukung input interaktif maupun piped (echo "..." | npm run chat).
@@ -52,10 +63,17 @@ async function main(): Promise<void> {
     if (!line) continue;
 
     try {
-      const reply = await agent.handleMessage('cli:local', line);
-      console.log(`Agent: ${reply}\n`);
+      // Streaming: token jawaban dicetak seketika begitu diterima dari model.
+      let printed = 0;
+      process.stdout.write('Agent: ');
+      const reply = await agent.handleMessage('cli:local', line, (accumulated) => {
+        process.stdout.write(accumulated.slice(printed));
+        printed = accumulated.length;
+      });
+      // Pastikan sisa jawaban (bila ada) ikut tercetak.
+      process.stdout.write(`${reply.slice(printed)}\n\n`);
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
+      console.error(`\nError: ${error instanceof Error ? error.message : String(error)}\n`);
     }
   }
 
