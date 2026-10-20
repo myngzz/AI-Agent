@@ -1,0 +1,30 @@
+{
+  "name": "ai-agent",
+  "version": "0.1.0",
+  "description": "AI agent pribadi dengan integrasi Telegram & WhatsApp, ditenagai Ollama (LLM lokal)",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "chat": "tsx src/cli.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "test:scheduler": "tsx scripts/test-scheduler.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "grammy": "^1.30.0",
+    "ollama": "^0.5.11",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.26.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
