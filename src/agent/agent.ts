@@ -12,7 +12,7 @@ export interface AgentOptions {
   timezone: string;
   maxHistory: number;
   maxToolIterations: number;
-  /** Bila diisi, tools pengingat & langganan berita ikut didaftarkan. */
+ 
   scheduler?: Scheduler;
   newsDigestTime?: string;
   /** Batas konteks model (token). 0/kosong = default model. Kecilkan untuk hemat RAM. */
