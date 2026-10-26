@@ -18,7 +18,6 @@ export interface AgentOptions {
   /** Batas konteks model (token). 0/kosong = default model. Kecilkan untuk hemat RAM. */
   numCtx?: number;
 }
-
 /**
  * Inti agent: menerima pesan teks, memanggil LLM Ollama dengan tool calling,
  * mengeksekusi tool yang diminta model, lalu mengembalikan jawaban akhir.
